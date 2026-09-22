@@ -6,4 +6,8 @@
 
 Для проверки существующей онтологии без копирования данных задайте `ONTOLOGY_TEST_ROOT` на каталог `txttsql/memory` и запустите `cargo test --locked --test ontology_live -- --ignored`.
 
+Для отдельного тестового Airflow 2 задайте `AIRFLOW_TEST_URL`, `AIRFLOW_TEST_USER`, `AIRFLOW_TEST_PASSWORD`, `AIRFLOW_TEST_DAG` и запустите `cargo test --locked --test airflow_live -- --ignored`. Тест проверяет реальный REST API v1, поиск DAG и чтение списка задач; он не меняет DAG.
+
+Для тестового OpenMetadata задайте `OPENMETADATA_TEST_URL`, `OPENMETADATA_TEST_TOKEN`, `OPENMETADATA_TEST_TABLE` (полное имя таблицы) и запустите `cargo test --locked --test openmetadata_live -- --ignored`. Публичный sandbox требует авторизации; тест не запускается без отдельного тестового токена.
+
 Перед коммитом: `git diff --check`, скан секретов и проверка зависимостей. Настоящие пароли и рабочие базы в CI запрещены. `osv-scanner scan -L Cargo.lock` сейчас сообщает `RUSTSEC-2023-0071` для `rsa 0.9.10`: этот пакет включён в lockfile как необязательная зависимость SQLx MySQL, но `cargo tree -i rsa --target all -e all` показывает, что в активном графе данного сервера его нет. Предупреждение перепроверяют при изменении зависимостей.

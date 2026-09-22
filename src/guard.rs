@@ -307,6 +307,7 @@ mod tests {
                 name: "TEST_PASSWORD".into(),
             },
             allow_insecure: true,
+            ca_file: None,
             max_connections: 2,
             timeout_seconds: 5,
             max_rows: 10,

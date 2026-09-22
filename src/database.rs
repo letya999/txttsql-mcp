@@ -1,5 +1,5 @@
 use crate::{
-    config::{DatabaseKind, Source},
+    config::{DatabaseKind, Source, add_ca_file},
     guard::ApprovedQuery,
 };
 use anyhow::{Context, Result, bail};
@@ -85,6 +85,11 @@ impl PostgresAdapter {
             } else {
                 PgSslMode::VerifyFull
             });
+        let options = if let Some(path) = &self.source.ca_file {
+            options.ssl_root_cert(path)
+        } else {
+            options
+        };
         let pool = PgPoolOptions::new()
             .max_connections(self.source.max_connections)
             .acquire_timeout(Duration::from_secs(10))
@@ -156,11 +161,11 @@ impl ClickHouseAdapter {
         if url.host_str() != Some(source.host.as_str()) || !url.username().is_empty() {
             bail!("invalid ClickHouse host")
         }
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .pool_max_idle_per_host(source.max_connections as usize)
             .timeout(Duration::from_secs(source.timeout_seconds + 5))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+            .redirect(reqwest::redirect::Policy::none());
+        let client = add_ca_file(builder, source.ca_file.as_deref())?.build()?;
         Ok(Self {
             permits: Semaphore::new(source.max_connections as usize),
             source,

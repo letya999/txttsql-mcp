@@ -33,6 +33,7 @@ pub struct Source {
     pub password: SecretRef,
     #[serde(default)]
     pub allow_insecure: bool,
+    pub ca_file: Option<PathBuf>,
     #[serde(default = "default_pool_size")]
     pub max_connections: u32,
     #[serde(default = "default_timeout")]
@@ -78,6 +79,7 @@ pub struct ApiSource {
     pub basic_password: Option<SecretRef>,
     #[serde(default)]
     pub allow_insecure: bool,
+    pub ca_file: Option<PathBuf>,
     /// Airflow 2 uses v1; Airflow 3 uses v2. Ignored for OpenMetadata.
     pub api_version: Option<u8>,
 }
@@ -136,6 +138,12 @@ impl Config {
             {
                 bail!("source {} has invalid limits", source.id)
             }
+            if source.allow_insecure && source.ca_file.is_some() {
+                bail!(
+                    "source {} cannot combine allow_insecure with ca_file",
+                    source.id
+                )
+            }
             for name in &source.allowed_schemas {
                 if !valid_object_name(name) || name.contains('.') {
                     bail!("source {} has invalid schema allowlist entry", source.id)
@@ -162,6 +170,9 @@ impl Config {
             .into_iter()
             .flatten()
         {
+            if api.allow_insecure && api.ca_file.is_some() {
+                bail!("metadata source cannot combine allow_insecure with ca_file")
+            }
             if (api.token.is_some() && (api.basic_user.is_some() || api.basic_password.is_some()))
                 || (api.token.is_none()
                     && (api.basic_user.as_ref().is_none_or(String::is_empty)
@@ -211,6 +222,24 @@ fn valid_object_name(name: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         })
+}
+
+pub fn add_ca_file(
+    mut builder: reqwest::ClientBuilder,
+    path: Option<&Path>,
+) -> Result<reqwest::ClientBuilder> {
+    if let Some(path) = path {
+        let pem = std::fs::read(path).context("cannot read CA file")?;
+        let certificates =
+            reqwest::Certificate::from_pem_bundle(&pem).context("invalid CA certificate bundle")?;
+        if certificates.is_empty() {
+            bail!("CA certificate bundle is empty")
+        }
+        for certificate in certificates {
+            builder = builder.add_root_certificate(certificate);
+        }
+    }
+    Ok(builder)
 }
 
 impl SecretRef {
@@ -293,6 +322,17 @@ mod tests {
         assert!(Config::load(&path).is_err());
         std::fs::write(&path, format!("{source}\n[airflow]\nurl='https://example.com'\ntoken={{kind='env',name='TOKEN'}}\napi_version=2\n")).unwrap();
         assert!(Config::load(&path).is_ok());
+        std::fs::write(&path, format!("{source}\n[airflow]\nurl='https://example.com'\ntoken={{kind='env',name='TOKEN'}}\nallow_insecure=true\nca_file='internal.pem'\n")).unwrap();
+        assert!(Config::load(&path).is_err());
+        std::fs::write(
+            &path,
+            source.replace(
+                "allowed_schemas=['public']",
+                "allowed_schemas=['public']\nallow_insecure=true\nca_file='internal.pem'",
+            ),
+        )
+        .unwrap();
+        assert!(Config::load(&path).is_err());
         std::fs::write(&path, format!("{source}\n[airflow]\nurl='https://example.com'\ntoken={{kind='env',name='TOKEN'}}\nbasic_user='reader'\nbasic_password={{kind='env',name='PASSWORD'}}\n")).unwrap();
         assert!(Config::load(&path).is_err());
         std::fs::write(
@@ -317,6 +357,14 @@ mod tests {
         );
         std::fs::write(&path, "x".repeat(8193)).unwrap();
         assert!(secret.resolve().await.is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn invalid_ca_bundle_is_rejected() {
+        let path = std::env::temp_dir().join(format!("txttsql-ca-{}", std::process::id()));
+        std::fs::write(&path, "not a PEM certificate").unwrap();
+        assert!(add_ca_file(reqwest::Client::builder(), Some(&path)).is_err());
         std::fs::remove_file(path).unwrap();
     }
 

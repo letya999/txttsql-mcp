@@ -10,6 +10,7 @@ database = "app"
 user = "mcp_reader"
 # Or omit user and resolve a rotating username: user_secret = { kind = "broker", program = "/usr/local/bin/credential-broker", args = ["user", "app_pg"] }
 password = { kind = "env", name = "APP_PG_PASSWORD" }
+# ca_file = "/run/secrets/internal-ca.pem" # private CA; TLS hostname validation stays on
 allowed_schemas = ["public"]
 max_connections = 8
 max_rows = 1000
@@ -48,6 +49,7 @@ ontology_path = "/ontology"
 # [openmetadata]
 # url = "https://metadata.example.internal"
 # token = { kind = "env", name = "OPENMETADATA_TOKEN" }
+# ca_file = "/run/secrets/internal-ca.pem"
 #
 # [airflow]
 # url = "https://airflow.example.internal"

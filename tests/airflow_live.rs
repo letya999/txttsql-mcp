@@ -15,6 +15,7 @@ async fn discovers_and_describes_real_dag() {
             name: "AIRFLOW_TEST_PASSWORD".into(),
         }),
         allow_insecure: true,
+        ca_file: None,
         api_version: Some(1),
     };
     let dag_id = std::env::var("AIRFLOW_TEST_DAG").unwrap();

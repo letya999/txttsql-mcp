@@ -1,4 +1,5 @@
 //! Run against an explicitly created disposable PostgreSQL or CockroachDB.
+use std::path::PathBuf;
 use txttsql_mcp::{
     config::{DatabaseKind, SecretRef, Source},
     database::Registry,
@@ -6,6 +7,7 @@ use txttsql_mcp::{
 };
 
 fn source(id: &str, table: &str) -> Source {
+    let ca_file = std::env::var_os("PGWIRE_TEST_CA_FILE").map(PathBuf::from);
     let kind = match std::env::var("PGWIRE_TEST_KIND").unwrap().as_str() {
         "postgres" => DatabaseKind::Postgres,
         "cockroach" => DatabaseKind::Cockroach,
@@ -22,7 +24,8 @@ fn source(id: &str, table: &str) -> Source {
         password: SecretRef::Env {
             name: "PGWIRE_TEST_PASSWORD".into(),
         },
-        allow_insecure: true,
+        allow_insecure: ca_file.is_none(),
+        ca_file,
         max_connections: 2,
         timeout_seconds: 5,
         max_rows: 2,

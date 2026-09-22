@@ -4,6 +4,8 @@
 
 Для `tests/pgwire_live.rs` задайте `PGWIRE_TEST_KIND=postgres|cockroach`, `PGWIRE_TEST_PORT`, `PGWIRE_TEST_USER`, `PGWIRE_TEST_PASSWORD` и запустите `cargo test --locked --test pgwire_live -- --ignored`. Для ClickHouse нужны `CH_TEST_PORT`, `CH_TEST_PASSWORD` и `cargo test --locked --test clickhouse_live -- --ignored`. Для проверки трёх БД в одном MCP процессе задайте `MIXED_TEST_PG_PORT`, `MIXED_TEST_CR_PORT`, `MIXED_TEST_CH_PORT`, `MIXED_TEST_PASSWORD` и запустите `cargo test --locked --test mcp_protocol one_mcp_process_serves_three_databases -- --ignored`. Все тестовые БД должны содержать `analytics.public.metrics` и `analytics.public.other` (ClickHouse: `analytics.metrics`, `analytics.other`).
 
+Для TLS-проверки PostgreSQL/CockroachDB с внутренним CA дополнительно задайте `PGWIRE_TEST_CA_FILE` (PEM).
+
 Для проверки существующей онтологии без копирования данных задайте `ONTOLOGY_TEST_ROOT` на каталог `txttsql/memory` и запустите `cargo test --locked --test ontology_live -- --ignored`.
 
 Для отдельного тестового Airflow 2 задайте `AIRFLOW_TEST_URL`, `AIRFLOW_TEST_USER`, `AIRFLOW_TEST_PASSWORD`, `AIRFLOW_TEST_DAG` и запустите `cargo test --locked --test airflow_live -- --ignored`. Тест проверяет реальный REST API v1, поиск DAG и чтение списка задач; он не меняет DAG.

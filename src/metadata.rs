@@ -1,4 +1,4 @@
-use crate::config::ApiSource;
+use crate::config::{ApiSource, add_ca_file};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use secrecy::ExposeSecret;
@@ -57,10 +57,10 @@ struct ApiClient {
 impl ApiClient {
     fn new(config: ApiSource) -> Result<Self> {
         let base = reqwest::Url::parse(&config.url)?;
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+            .redirect(reqwest::redirect::Policy::none());
+        let client = add_ca_file(builder, config.ca_file.as_deref())?.build()?;
         Ok(Self {
             base,
             config,
@@ -294,6 +294,7 @@ mod tests {
             basic_user: None,
             basic_password: None,
             allow_insecure: true,
+            ca_file: None,
             api_version: version,
         };
         let registry = Registry::new(Some(source(None)), Some(source(Some(2)))).unwrap();
@@ -350,6 +351,7 @@ mod tests {
             basic_user: Some("reader".into()),
             basic_password: Some(SecretRef::File { path: path.clone() }),
             allow_insecure: true,
+            ca_file: None,
             api_version: Some(1),
         };
         let registry = Registry::new(None, Some(config)).unwrap();

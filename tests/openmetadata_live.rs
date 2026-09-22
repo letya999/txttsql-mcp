@@ -15,6 +15,7 @@ async fn searches_and_describes_real_table() {
         basic_user: None,
         basic_password: None,
         allow_insecure: false,
+        ca_file: None,
         api_version: None,
     };
     let table = std::env::var("OPENMETADATA_TEST_TABLE").unwrap();

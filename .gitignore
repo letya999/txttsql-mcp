@@ -1,0 +1,13 @@
+/target/
+/config.toml
+/.env
+/.env.*
+/*.sqlite*
+/.repo-safety/.venv/
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+tokens.json
+secrets.json

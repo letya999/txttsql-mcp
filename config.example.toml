@@ -1,0 +1,58 @@
+# Copy to config.toml, which is ignored by Git. No credentials belong in this file.
+# The database accounts must be read-only. Configure their grants on the server.
+
+[[sources]]
+id = "app_pg"
+kind = "postgres"
+host = "postgres.example.internal"
+port = 5432
+database = "app"
+user = "mcp_reader"
+# Or omit user and resolve a rotating username: user_secret = { kind = "broker", program = "/usr/local/bin/credential-broker", args = ["user", "app_pg"] }
+password = { kind = "env", name = "APP_PG_PASSWORD" }
+allowed_schemas = ["public"]
+max_connections = 8
+max_rows = 1000
+timeout_seconds = 30
+
+[[sources]]
+id = "events_cr"
+kind = "cockroach"
+host = "cockroach.example.internal"
+port = 26257
+database = "events"
+user = "mcp_reader"
+password = { kind = "file", path = "/run/secrets/cockroach_password" }
+allowed_schemas = ["public"]
+max_connections = 16
+
+[[sources]]
+id = "analytics_ch"
+kind = "clickhouse"
+host = "clickhouse.example.internal"
+port = 8443
+database = "analytics"
+user = "mcp_reader"
+# Broker stdout is the password; arguments are passed directly, without a shell.
+password = { kind = "broker", program = "/usr/local/bin/credential-broker", args = ["get", "analytics_ch"] }
+allowed_schemas = ["analytics"]
+max_connections = 16
+
+[memory]
+enabled = false
+path = "/data/queries.sqlite"
+# Mount the original txttsql/memory directory read-only to expose its ontology.
+ontology_path = "/ontology"
+
+# Optional metadata integrations. Uncomment when configured.
+# [openmetadata]
+# url = "https://metadata.example.internal"
+# token = { kind = "env", name = "OPENMETADATA_TOKEN" }
+#
+# [airflow]
+# url = "https://airflow.example.internal"
+# token = { kind = "env", name = "AIRFLOW_TOKEN" }
+# api_version = 2 # Airflow 3; use 1 for Airflow 2
+# Airflow 2 Basic Auth alternative: omit token and set basic_user plus basic_password.
+# basic_user = "mcp_reader"
+# basic_password = { kind = "file", path = "/run/secrets/airflow_password" }

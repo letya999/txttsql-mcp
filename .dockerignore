@@ -1,0 +1,9 @@
+target
+.git
+config.toml
+.env*
+*.sqlite*
+.repo-safety
+docs
+specs
+.work

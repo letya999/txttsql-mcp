@@ -301,6 +301,93 @@ fn env_file_supplies_http_credentials_over_mcp() {
 }
 
 #[test]
+fn broker_does_not_inherit_mcp_stdin() {
+    let root = std::env::temp_dir().join(format!(
+        "txttsql-broker-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let broker = root.join("broker.py");
+    std::fs::write(
+        &broker,
+        "import sys\nif sys.stdin.read(1): raise SystemExit(2)\nprint('test-bearer')\n",
+    )
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0; 4096];
+            let count = stream.read(&mut chunk).unwrap();
+            assert!(count > 0);
+            request.extend_from_slice(&chunk[..count]);
+            if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                break;
+            }
+        }
+        assert!(
+            String::from_utf8(request)
+                .unwrap()
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-bearer")
+        );
+        let body = r#"{"hits":{"hits":[]}}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    });
+    let python = if cfg!(windows) { "python" } else { "python3" };
+    let config = root.join("test.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[openmetadata]\nurl='http://127.0.0.1:{port}'\nallow_insecure=true\ntoken={{kind='broker',program='{python}',args=[{}]}}\n",
+            toml::Value::String(broker.to_string_lossy().into_owned())
+        ),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_txttsql-mcp"))
+        .arg("--config")
+        .arg(&config)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    assert!(
+        send(&mut input, &mut output, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"broker-test","version":"1"}}}))
+            .get("result")
+            .is_some()
+    );
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+    let response = send(
+        &mut input,
+        &mut output,
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_metadata","arguments":{"provider":"openmetadata","text":"x"}}}),
+    );
+    let payload: Value =
+        serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["ok"], true, "{payload}");
+    server.join().unwrap();
+    drop(input);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_file(config).unwrap();
+    std::fs::remove_file(broker).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[test]
 fn loads_independent_database_and_metadata_plugins() {
     let root = std::env::temp_dir().join(format!(
         "txttsql-plugin-{}-{}",

@@ -373,6 +373,8 @@ impl SecretRef {
                 }
                 let mut child = Command::new(program)
                     .args(args)
+                    // Never pass the MCP protocol stream to a credential helper.
+                    .stdin(Stdio::null())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null())
                     .kill_on_drop(true)

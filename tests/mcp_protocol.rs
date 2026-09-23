@@ -111,6 +111,30 @@ fn one_mcp_process_serves_three_databases() {
         assert_eq!(payload["ok"], true, "{payload}");
         assert!(!payload["discovered"].as_array().unwrap().is_empty());
     }
+    for (id, source, table) in [
+        (11, "pg", "public.metrics"),
+        (13, "cr", "public.metrics"),
+        (15, "ch", "analytics.metrics"),
+    ] {
+        let response = send(
+            &mut input,
+            &mut output,
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"execute_sql","arguments":{"source":source,"sql":format!("DELETE FROM {table}")}}}),
+        );
+        let payload: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(payload["ok"], false, "{payload}");
+        let response = send(
+            &mut input,
+            &mut output,
+            json!({"jsonrpc":"2.0","id":id+1,"method":"tools/call","params":{"name":"execute_sql","arguments":{"source":source,"sql":format!("SELECT COUNT(*) AS n FROM {table}")}}}),
+        );
+        let payload: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(payload["result"]["rows"][0]["n"], 3, "{payload}");
+    }
     drop(input);
     child.kill().ok();
     child.wait().unwrap();

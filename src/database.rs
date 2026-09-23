@@ -4,6 +4,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+use futures_util::TryStreamExt;
 use secrecy::ExposeSecret;
 use serde::Serialize;
 use serde_json::Value;
@@ -18,6 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, Semaphore};
+
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Serialize)]
 pub struct QueryResult {
@@ -121,21 +124,30 @@ impl DatabaseAdapter for PostgresAdapter {
             "SELECT row_to_json(_result) FROM ({}) AS _result",
             query.sql
         );
-        let rows = sqlx::query_scalar::<_, Json<Value>>(&sql)
-            .fetch_all(&mut *transaction)
-            .await
-            .context("query execution failed")?;
+        let mut stream = sqlx::query_scalar::<_, Json<Value>>(&sql).fetch(&mut *transaction);
+        let mut rows = Vec::new();
+        let mut response_bytes = 0_usize;
+        let mut truncated = false;
+        while let Some(Json(row)) = stream.try_next().await.context("query execution failed")? {
+            if rows.len() == query.row_cap as usize {
+                truncated = true;
+                break;
+            }
+            response_bytes = response_bytes.saturating_add(serde_json::to_vec(&row)?.len());
+            if response_bytes > MAX_RESPONSE_BYTES {
+                drop(stream);
+                transaction.rollback().await?;
+                bail!("database response exceeds 16 MB")
+            }
+            rows.push(row);
+        }
+        drop(stream);
         transaction
             .rollback()
             .await
             .context("could not roll back read-only transaction")?;
-        let truncated = rows.len() > query.row_cap as usize;
         Ok(QueryResult {
-            rows: rows
-                .into_iter()
-                .take(query.row_cap as usize)
-                .map(|row| row.0)
-                .collect(),
+            rows,
             truncated,
             elapsed_ms: start.elapsed().as_millis(),
         })

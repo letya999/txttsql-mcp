@@ -84,4 +84,16 @@ async fn independent_sources_and_backend_read_only() {
         .await
         .unwrap();
     assert_eq!(result.rows[0]["n"], 3);
+    if first.kind == DatabaseKind::Postgres {
+        let large =
+            guard::validate(&first, "SELECT repeat('x', 17000000) AS payload", None).unwrap();
+        let error = registry
+            .get("first")
+            .unwrap()
+            .execute(&large)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("16 MB"), "{error}");
+    }
 }

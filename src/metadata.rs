@@ -140,7 +140,7 @@ impl MetadataAdapter for OpenMetadata {
         self.api
             .get(
                 &["api", "v1", "tables", "name", id],
-                &[("fields", "columns,tags,description,owners")],
+                &[("fields", "columns,tags,owners")],
             )
             .await
     }
@@ -273,6 +273,18 @@ mod tests {
                 } else if line.starts_with("GET /api/v1/search/query?") {
                     r#"{"hits":{"hits":[]}}"#
                 } else if line.starts_with("GET /api/v1/tables/name/service.db.schema.orders?") {
+                    let url = reqwest::Url::parse(&format!(
+                        "http://localhost{}",
+                        line.split_whitespace().nth(1).unwrap()
+                    ))
+                    .unwrap();
+                    assert_eq!(
+                        url.query_pairs()
+                            .find(|(key, _)| key == "fields")
+                            .unwrap()
+                            .1,
+                        "columns,tags,owners"
+                    );
                     r#"{"name":"orders"}"#
                 } else {
                     panic!("unexpected request: {line}")

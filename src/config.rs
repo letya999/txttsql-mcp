@@ -360,6 +360,24 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    #[tokio::test]
+    async fn broker_executes_directly() {
+        use secrecy::ExposeSecret;
+        let (program, args) = if cfg!(windows) {
+            (
+                PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/whoami.exe"),
+                vec![],
+            )
+        } else {
+            (
+                PathBuf::from("/usr/bin/printf"),
+                vec!["disposable\n".into()],
+            )
+        };
+        let broker = SecretRef::Broker { program, args };
+        assert!(!broker.resolve().await.unwrap().expose_secret().is_empty());
+    }
+
     #[test]
     fn invalid_ca_bundle_is_rejected() {
         let path = std::env::temp_dir().join(format!("txttsql-ca-{}", std::process::id()));

@@ -197,6 +197,110 @@ fn stdio_initializes_lists_tools_and_validates() {
 }
 
 #[test]
+fn env_file_supplies_http_credentials_over_mcp() {
+    let root = std::env::temp_dir().join(format!(
+        "txttsql-env-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let env_file = root.join(".env");
+    std::fs::write(
+        &env_file,
+        "OM_TEST_TOKEN=test-bearer\nAIRFLOW_TEST_PASSWORD=test-password\n",
+    )
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 4096];
+                let count = stream.read(&mut chunk).unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+            let body = if request.starts_with("get /api/v1/search/query?") {
+                assert!(request.contains("authorization: bearer test-bearer"));
+                r#"{"hits":{"hits":[]}}"#
+            } else {
+                assert!(request.starts_with("get /api/v1/dags?"), "{request}");
+                assert!(request.contains("authorization: basic cmvhzgvyonrlc3qtcgfzc3dvcmq="));
+                r#"{"dags":[],"total_entries":0}"#
+            };
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    let config = root.join("test.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[openmetadata]\nurl='http://127.0.0.1:{port}'\ntoken={{kind='env',name='OM_TEST_TOKEN'}}\nallow_insecure=true\n[airflow]\nurl='http://127.0.0.1:{port}'\napi_version=1\nbasic_user='reader'\nbasic_password={{kind='env',name='AIRFLOW_TEST_PASSWORD'}}\nallow_insecure=true\n"
+        ),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_txttsql-mcp"))
+        .arg("--env-file")
+        .arg(&env_file)
+        .arg("--config")
+        .arg(&config)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    assert!(
+        send(&mut input, &mut output, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"env-test","version":"1"}}}))
+            .get("result")
+            .is_some()
+    );
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .unwrap();
+    for (id, provider, key) in [(2, "openmetadata", "hits"), (3, "airflow", "dags")] {
+        let response = send(
+            &mut input,
+            &mut output,
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"search_metadata","arguments":{"provider":provider,"text":"x"}}}),
+        );
+        let payload: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(payload["ok"], true, "{payload}");
+        assert!(!payload["result"][key].is_null(), "{payload}");
+    }
+    server.join().unwrap();
+    drop(input);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_file(&env_file).unwrap();
+    let missing = Command::new(env!("CARGO_BIN_EXE_txttsql-mcp"))
+        .arg("--env-file")
+        .arg(&env_file)
+        .arg("--config")
+        .arg(&config)
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    assert!(missing.stdout.is_empty());
+    std::fs::remove_file(config).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
+#[test]
 fn loads_independent_database_and_metadata_plugins() {
     let root = std::env::temp_dir().join(format!(
         "txttsql-plugin-{}-{}",
@@ -221,6 +325,14 @@ fn loads_independent_database_and_metadata_plugins() {
     .unwrap();
     let token = root.join("openmetadata-token");
     std::fs::write(&token, "plugin-test-token").unwrap();
+    let ontology = root.join("ontology");
+    std::fs::create_dir_all(ontology.join("graphs")).unwrap();
+    std::fs::write(ontology.join("metric.md"), "Revenue metrics are verified.").unwrap();
+    std::fs::write(
+        ontology.join("graphs/joins.json"),
+        r#"{"nodes":[{"id":"metrics"},{"id":"orders"}],"edges":[{"from":"metrics","to":"orders"}]}"#,
+    )
+    .unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let mock_openmetadata = std::thread::spawn(move || {
@@ -265,9 +377,10 @@ fn loads_independent_database_and_metadata_plugins() {
         toml::Value::String(path.to_string_lossy().into_owned()).to_string()
     };
     let config = root.join("config.toml");
+    let memory = root.join("memory.sqlite");
     std::fs::write(&config, format!(
-        "[[plugin_databases]]\nid='sqlite_test'\nmanifest={}\nallowed_schemas=['main']\nmax_rows=2\nworkers=2\n[plugin_databases.settings]\npath={}\n[[plugin_metadata]]\nid='catalog_test'\nmanifest={}\n[plugin_metadata.settings]\npath={}\n[[plugin_metadata]]\nid='openmetadata_test'\nmanifest={}\n[plugin_metadata.settings]\nurl='http://127.0.0.1:{port}'\nallow_insecure=true\n[plugin_metadata.secrets]\ntoken={{kind='file',path={}}}\n",
-        quote(&db_manifest), quote(&database), quote(&meta_manifest), quote(&catalog), quote(&package_root.join("openmetadata/plugin.json")), quote(&token)
+        "[[plugin_databases]]\nid='sqlite_test'\nmanifest={}\nallowed_schemas=['main']\nmax_rows=2\nworkers=2\n[plugin_databases.settings]\npath={}\n[[plugin_metadata]]\nid='catalog_test'\nmanifest={}\n[plugin_metadata.settings]\npath={}\n[[plugin_metadata]]\nid='openmetadata_test'\nmanifest={}\n[plugin_metadata.settings]\nurl='http://127.0.0.1:{port}'\nallow_insecure=true\n[plugin_metadata.secrets]\ntoken={{kind='file',path={}}}\n[memory]\nenabled=true\npath={}\nontology_path={}\n",
+        quote(&db_manifest), quote(&database), quote(&meta_manifest), quote(&catalog), quote(&package_root.join("openmetadata/plugin.json")), quote(&token), quote(&memory), quote(&ontology)
     )).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_txttsql-mcp"))
         .arg("--config")
@@ -292,6 +405,30 @@ fn loads_independent_database_and_metadata_plugins() {
     )
     .unwrap();
     input.flush().unwrap();
+    let tools = send(
+        &mut input,
+        &mut output,
+        json!({"jsonrpc":"2.0","id":20,"method":"tools/list","params":{}}),
+    );
+    let tools = tools["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 13);
+    for name in [
+        "list_sources",
+        "list_tables",
+        "describe_table",
+        "validate_sql",
+        "execute_sql",
+        "find_context",
+        "explore_graph",
+        "search_saved_queries",
+        "annotate_saved_query",
+        "search_saved_metadata",
+        "annotate_saved_metadata",
+        "search_metadata",
+        "metadata_detail",
+    ] {
+        assert!(tools.iter().any(|tool| tool["name"] == name), "{name}");
+    }
     let call = |input: &mut ChildStdin,
                 output: &mut BufReader<ChildStdout>,
                 id,
@@ -330,9 +467,10 @@ fn loads_independent_database_and_metadata_plugins() {
         &mut output,
         5,
         "execute_sql",
-        json!({"source":"sqlite_test","sql":sql}),
+        json!({"source":"sqlite_test","sql":sql,"question":"Revenue metrics"}),
     );
     assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["memory_saved"], true, "{result}");
     assert_eq!(result["result"]["rows"].as_array().unwrap().len(), 2);
     assert_eq!(result["result"]["truncated"], true);
     let tables = call(
@@ -386,11 +524,59 @@ fn loads_independent_database_and_metadata_plugins() {
         json!({"provider":"openmetadata_test","id":"service.db.schema.orders"}),
     );
     assert_eq!(om_detail["result"]["name"], "orders");
+    let context = call(
+        &mut input,
+        &mut output,
+        21,
+        "find_context",
+        json!({"text":"revenue"}),
+    );
+    assert_eq!(context["hits"].as_array().unwrap().len(), 1);
+    let graph = call(
+        &mut input,
+        &mut output,
+        22,
+        "explore_graph",
+        json!({"graph":"joins","node":"metrics"}),
+    );
+    assert_eq!(graph["result"]["edges"].as_array().unwrap().len(), 1);
+    let queries = call(
+        &mut input,
+        &mut output,
+        23,
+        "search_saved_queries",
+        json!({"text":"Revenue"}),
+    );
+    let query_id = queries["queries"][0]["id"].as_i64().unwrap();
+    let annotated = call(
+        &mut input,
+        &mut output,
+        24,
+        "annotate_saved_query",
+        json!({"id":query_id,"tags":["verified"],"note":"MCP check"}),
+    );
+    assert_eq!(annotated["ok"], true);
+    let entities = call(
+        &mut input,
+        &mut output,
+        25,
+        "search_saved_metadata",
+        json!({"text":"payments"}),
+    );
+    let entity_id = entities["entities"][0]["id"].as_i64().unwrap();
+    let annotated = call(
+        &mut input,
+        &mut output,
+        26,
+        "annotate_saved_metadata",
+        json!({"id":entity_id,"tags":["verified"],"note":"MCP check"}),
+    );
+    assert_eq!(annotated["ok"], true);
     mock_openmetadata.join().unwrap();
     drop(input);
     assert!(child.wait().unwrap().success());
-    for path in [config, database, catalog, token] {
-        std::fs::remove_file(path).unwrap();
-    }
-    std::fs::remove_dir(root).unwrap();
+    let canonical_root = root.canonicalize().unwrap();
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    assert_eq!(canonical_root.parent(), Some(temp.as_path()));
+    std::fs::remove_dir_all(root).unwrap();
 }

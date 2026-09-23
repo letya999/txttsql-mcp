@@ -20,6 +20,8 @@ jobs:
       - run: cargo +1.96.0 check --locked
       - run: cargo +1.96.0 clippy --locked --all-targets -- -D warnings
       - run: cargo +1.96.0 test --locked
+      - run: python3 tests/test_http_credential_broker.py
+      - run: python3 tests/test_windows_credential_broker.py
 
   docker:
     runs-on: ubuntu-24.04

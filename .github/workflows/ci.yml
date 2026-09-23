@@ -29,3 +29,5 @@ jobs:
           persist-credentials: false
       - run: docker build -t txttsql-mcp:ci .
       - run: python3 tests/docker_memory_smoke.py
+      - run: docker build -f Dockerfile.plugins --build-arg BASE_IMAGE=txttsql-mcp:ci -t txttsql-mcp:plugins .
+      - run: python3 tests/docker_plugins_smoke.py

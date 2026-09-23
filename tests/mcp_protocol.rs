@@ -22,8 +22,12 @@ fn one_mcp_process_serves_three_databases() {
         std::env::var("MIXED_TEST_CR_PORT").unwrap(),
         std::env::var("MIXED_TEST_CH_PORT").unwrap(),
     );
+    let cr_tls = std::env::var("MIXED_TEST_CR_CA_FILE").map_or_else(
+        |_| "allow_insecure=true".to_owned(),
+        |path| format!("ca_file={}", toml::Value::String(path)),
+    );
     let config = format!(
-        "[[sources]]\nid='pg'\nkind='postgres'\nhost='127.0.0.1'\nport={pg}\ndatabase='analytics'\nuser='postgres'\npassword={{kind='env',name='MIXED_TEST_PASSWORD'}}\nallowed_tables=['public.metrics']\nallow_insecure=true\nmax_rows=2\n\n[[sources]]\nid='cr'\nkind='cockroach'\nhost='127.0.0.1'\nport={cr}\ndatabase='analytics'\nuser='root'\npassword={{kind='env',name='MIXED_TEST_PASSWORD'}}\nallowed_tables=['public.metrics']\nallow_insecure=true\nmax_rows=2\n\n[[sources]]\nid='ch'\nkind='clickhouse'\nhost='127.0.0.1'\nport={ch}\ndatabase='analytics'\nuser='default'\npassword={{kind='env',name='MIXED_TEST_PASSWORD'}}\nallowed_tables=['analytics.metrics']\nallow_insecure=true\nmax_rows=2\n"
+        "[[sources]]\nid='pg'\nkind='postgres'\nhost='127.0.0.1'\nport={pg}\ndatabase='analytics'\nuser='postgres'\npassword={{kind='env',name='MIXED_TEST_PASSWORD'}}\nallowed_tables=['public.metrics']\nallow_insecure=true\nmax_rows=2\n\n[[sources]]\nid='cr'\nkind='cockroach'\nhost='127.0.0.1'\nport={cr}\ndatabase='analytics'\nuser='root'\npassword={{kind='env',name='MIXED_TEST_PASSWORD'}}\nallowed_tables=['public.metrics']\n{cr_tls}\nmax_rows=2\n\n[[sources]]\nid='ch'\nkind='clickhouse'\nhost='127.0.0.1'\nport={ch}\ndatabase='analytics'\nuser='default'\npassword={{kind='env',name='MIXED_TEST_PASSWORD'}}\nallowed_tables=['analytics.metrics']\nallow_insecure=true\nmax_rows=2\n"
     );
     let config = config
         .replace(

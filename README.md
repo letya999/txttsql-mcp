@@ -21,7 +21,7 @@ docker build -t txttsql-mcp:local .
 docker run --rm -i --env APP_PG_PASSWORD --mount type=bind,src=/absolute/path/config.toml,dst=/app/config.toml,readonly txttsql-mcp:local
 ```
 
-Mount `/data` writable only if query memory is enabled. Mount `/ontology` read-only to use an existing `txttsql/memory` directory. Configure all three sources in one config; the server opens the selected source on demand.
+Mount `/data` writable only if query memory is enabled. A new Docker named volume inherits the image's `/data` permissions; for a bind mount, grant UID `65532` write access to the host directory. Mount `/ontology` read-only to use an existing `txttsql/memory` directory. Configure all three sources in one config; the server opens the selected source on demand.
 
 ## Documentation
 

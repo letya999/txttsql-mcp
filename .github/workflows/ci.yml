@@ -28,3 +28,4 @@ jobs:
         with:
           persist-credentials: false
       - run: docker build -t txttsql-mcp:ci .
+      - run: python3 tests/docker_memory_smoke.py

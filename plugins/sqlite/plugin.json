@@ -1,0 +1,11 @@
+{
+  "manifest_version": 1,
+  "id": "sqlite",
+  "version": "0.1.0",
+  "kind": "database",
+  "dialect": "ansi",
+  "command": "python3",
+  "command_windows": "python",
+  "args": ["plugin.py"],
+  "capabilities": ["execute", "list_tables", "describe_table"]
+}

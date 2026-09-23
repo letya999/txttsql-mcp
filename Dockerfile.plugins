@@ -1,0 +1,5 @@
+FROM txttsql-mcp:local
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && apt-get clean
+COPY --chown=65532:65532 plugins /opt/txttsql/plugins
+USER 65532:65532

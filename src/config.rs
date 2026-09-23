@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use secrecy::SecretString;
 use serde::Deserialize;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -12,11 +12,50 @@ use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
     pub sources: Vec<Source>,
+    #[serde(default)]
+    pub plugin_databases: Vec<PluginDatabase>,
+    #[serde(default)]
+    pub plugin_metadata: Vec<PluginMetadata>,
     #[serde(default)]
     pub memory: Memory,
     pub openmetadata: Option<ApiSource>,
     pub airflow: Option<ApiSource>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginDatabase {
+    pub id: String,
+    pub manifest: PathBuf,
+    #[serde(default)]
+    pub settings: toml::Table,
+    #[serde(default)]
+    pub secrets: HashMap<String, SecretRef>,
+    #[serde(default = "default_pool_size")]
+    pub workers: u32,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+    #[serde(default = "default_limit")]
+    pub max_rows: u32,
+    #[serde(default)]
+    pub allowed_schemas: Vec<String>,
+    #[serde(default)]
+    pub allowed_tables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginMetadata {
+    pub id: String,
+    pub manifest: PathBuf,
+    #[serde(default)]
+    pub settings: toml::Table,
+    #[serde(default)]
+    pub secrets: HashMap<String, SecretRef>,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -108,8 +147,13 @@ impl Config {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read config {}", path.display()))?;
         let config: Self = toml::from_str(&raw).context("invalid configuration")?;
-        if config.sources.is_empty() {
-            bail!("at least one source is required")
+        if config.sources.is_empty()
+            && config.plugin_databases.is_empty()
+            && config.plugin_metadata.is_empty()
+            && config.openmetadata.is_none()
+            && config.airflow.is_none()
+        {
+            bail!("at least one database or metadata source is required")
         }
         let mut ids = HashSet::new();
         for source in &config.sources {
@@ -154,6 +198,53 @@ impl Config {
                     bail!("source {} has invalid table allowlist entry", source.id)
                 }
             }
+        }
+        for source in &config.plugin_databases {
+            if !valid_id(&source.id) || !ids.insert(&source.id) {
+                bail!("invalid or duplicate source id")
+            }
+            if source.manifest.as_os_str().is_empty()
+                || source.workers == 0
+                || source.workers > 16
+                || source.max_rows == 0
+                || source.max_rows > 100_000
+                || source.timeout_seconds == 0
+                || source.timeout_seconds > 300
+                || source.allowed_schemas.len() > 100
+                || source.allowed_tables.len() > 1000
+            {
+                bail!("plugin source {} has invalid limits", source.id)
+            }
+            for name in &source.allowed_schemas {
+                if !valid_object_name(name) || name.contains('.') {
+                    bail!("plugin source {} has invalid schema allowlist", source.id)
+                }
+            }
+            for name in &source.allowed_tables {
+                if !valid_object_name(name) || name.split('.').count() != 2 {
+                    bail!("plugin source {} has invalid table allowlist", source.id)
+                }
+            }
+            validate_plugin_settings(&source.settings, &source.secrets)?;
+        }
+        let mut provider_ids = HashSet::new();
+        if config.openmetadata.is_some() {
+            provider_ids.insert("openmetadata");
+        }
+        if config.airflow.is_some() {
+            provider_ids.insert("airflow");
+        }
+        for provider in &config.plugin_metadata {
+            if !valid_id(&provider.id) || !provider_ids.insert(provider.id.as_str()) {
+                bail!("invalid or duplicate metadata provider id")
+            }
+            if provider.manifest.as_os_str().is_empty()
+                || provider.timeout_seconds == 0
+                || provider.timeout_seconds > 300
+            {
+                bail!("metadata plugin {} has invalid limits", provider.id)
+            }
+            validate_plugin_settings(&provider.settings, &provider.secrets)?;
         }
         if config.memory.enabled && config.memory.path.is_none() {
             bail!("memory.path is required when memory is enabled")
@@ -200,6 +291,19 @@ impl Config {
         }
         Ok(config)
     }
+}
+
+fn validate_plugin_settings(
+    settings: &toml::Table,
+    secrets: &HashMap<String, SecretRef>,
+) -> Result<()> {
+    if toml::to_string(settings)?.len() > 32_000
+        || secrets.len() > 16
+        || secrets.keys().any(|name| !valid_id(name))
+    {
+        bail!("plugin settings or secret references are invalid")
+    }
+    Ok(())
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -308,6 +412,27 @@ mod tests {
         assert!(!valid_id("prod/ch"));
         assert!(valid_object_name("analytics.payments"));
         assert!(!valid_object_name("analytics.*"));
+    }
+
+    #[test]
+    fn metadata_plugin_can_run_without_database_source() {
+        let path = std::env::temp_dir().join(format!(
+            "txttsql-metadata-only-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "[[plugin_metadata]]\nid='catalog'\nmanifest='plugin.json'\n",
+        )
+        .unwrap();
+        assert!(Config::load(&path).is_ok());
+        std::fs::write(&path, "").unwrap();
+        assert!(Config::load(&path).is_err());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

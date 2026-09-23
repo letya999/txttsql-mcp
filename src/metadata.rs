@@ -12,15 +12,15 @@ pub trait MetadataAdapter: Send + Sync {
 }
 
 pub struct Registry {
-    adapters: HashMap<&'static str, Arc<dyn MetadataAdapter>>,
+    adapters: HashMap<String, Arc<dyn MetadataAdapter>>,
 }
 
 impl Registry {
     pub fn new(openmetadata: Option<ApiSource>, airflow: Option<ApiSource>) -> Result<Self> {
-        let mut adapters: HashMap<&'static str, Arc<dyn MetadataAdapter>> = HashMap::new();
+        let mut adapters: HashMap<String, Arc<dyn MetadataAdapter>> = HashMap::new();
         if let Some(config) = openmetadata {
             adapters.insert(
-                "openmetadata",
+                "openmetadata".into(),
                 Arc::new(OpenMetadata {
                     api: ApiClient::new(config)?,
                 }),
@@ -29,7 +29,7 @@ impl Registry {
         if let Some(config) = airflow {
             let version = config.api_version.unwrap_or(2);
             adapters.insert(
-                "airflow",
+                "airflow".into(),
                 Arc::new(Airflow {
                     api: ApiClient::new(config)?,
                     version,
@@ -41,10 +41,17 @@ impl Registry {
     pub fn get(&self, name: &str) -> Option<Arc<dyn MetadataAdapter>> {
         self.adapters.get(name).cloned()
     }
-    pub fn names(&self) -> Vec<&'static str> {
-        let mut names: Vec<_> = self.adapters.keys().copied().collect();
+    pub fn names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.adapters.keys().cloned().collect();
         names.sort_unstable();
         names
+    }
+
+    pub fn insert(&mut self, id: String, adapter: Arc<dyn MetadataAdapter>) -> Result<()> {
+        if self.adapters.insert(id, adapter).is_some() {
+            bail!("duplicate metadata adapter")
+        }
+        Ok(())
     }
 }
 

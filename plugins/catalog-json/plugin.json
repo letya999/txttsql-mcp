@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "id": "catalog-json",
+  "version": "0.1.0",
+  "kind": "metadata",
+  "command": "python3",
+  "command_windows": "python",
+  "args": ["plugin.py"],
+  "capabilities": ["search", "detail"]
+}

@@ -3,10 +3,11 @@ pub mod database;
 pub mod guard;
 pub mod memory;
 pub mod metadata;
+pub mod plugin;
 
 use crate::{
     config::Config, database::Registry as DatabaseRegistry, memory::MemoryStore,
-    metadata::Registry as MetadataRegistry,
+    metadata::Registry as MetadataRegistry, plugin::Registry as PluginRegistry,
 };
 use anyhow::{Context, Result};
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_router};
@@ -18,7 +19,22 @@ struct State {
     config: Config,
     databases: DatabaseRegistry,
     metadata: MetadataRegistry,
+    plugins: PluginRegistry,
     memory: MemoryStore,
+}
+
+enum SourceRef<'a> {
+    Builtin(&'a config::Source),
+    Plugin(Arc<plugin::DatabasePlugin>),
+}
+
+impl SourceRef<'_> {
+    fn policy(&self) -> guard::SqlPolicy<'_> {
+        match self {
+            Self::Builtin(source) => guard::SqlPolicy::from(*source),
+            Self::Plugin(plugin) => plugin.policy(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -87,25 +103,42 @@ struct AnnotationParams {
 impl McpServer {
     pub fn load(path: &Path) -> Result<Self> {
         let config = Config::load(path)?;
-        let databases = DatabaseRegistry::new(&config.sources)?;
-        let metadata = MetadataRegistry::new(config.openmetadata.clone(), config.airflow.clone())?;
+        let plugins = PluginRegistry::new(&config, path.parent().unwrap_or(Path::new(".")))?;
+        let mut databases = DatabaseRegistry::new(&config.sources)?;
+        for plugin in plugins.databases() {
+            databases.insert(plugin.config.id.clone(), plugin)?;
+        }
+        let mut metadata =
+            MetadataRegistry::new(config.openmetadata.clone(), config.airflow.clone())?;
+        for plugin in plugins.metadata() {
+            metadata.insert(plugin.id.clone(), plugin)?;
+        }
         let memory = MemoryStore::new(&config.memory);
         Ok(Self {
             state: Arc::new(State {
                 config,
                 databases,
                 metadata,
+                plugins,
                 memory,
             }),
         })
     }
 
-    fn source(&self, id: &str) -> Result<&config::Source> {
-        self.state
+    fn source(&self, id: &str) -> Result<SourceRef<'_>> {
+        if let Some(source) = self
+            .state
             .config
             .sources
             .iter()
             .find(|source| source.id == id)
+        {
+            return Ok(SourceRef::Builtin(source));
+        }
+        self.state
+            .plugins
+            .database(id)
+            .map(SourceRef::Plugin)
             .context("unknown source")
     }
 }
@@ -120,7 +153,8 @@ impl McpServer {
         description = "List configured database and metadata sources without revealing credentials"
     )]
     fn list_sources(&self) -> String {
-        let sources: Vec<_> = self.state.config.sources.iter().map(|source| json!({"id": source.id, "kind": format!("{:?}", source.kind).to_lowercase(), "max_rows": source.max_rows})).collect();
+        let mut sources: Vec<_> = self.state.config.sources.iter().map(|source| json!({"id": source.id, "kind": format!("{:?}", source.kind).to_lowercase(), "max_rows": source.max_rows})).collect();
+        sources.extend(self.state.plugins.databases().map(|plugin| json!({"id": plugin.config.id, "kind": "plugin", "plugin": plugin.plugin_id(), "max_rows": plugin.config.max_rows})));
         json!({"sources": sources, "metadata": self.state.metadata.names(), "query_memory": self.state.memory.enabled()}).to_string()
     }
 
@@ -131,6 +165,18 @@ impl McpServer {
         let source = match self.source(&params.source) {
             Ok(source) => source,
             Err(err) => return error(&err.to_string()),
+        };
+        if let SourceRef::Plugin(plugin) = &source {
+            return match plugin.list_tables().await {
+                Ok(tables) => {
+                    let discovered: Vec<_> = tables.iter().filter_map(|name| name.split_once('.').map(|(schema, table)| json!({"table_schema": schema, "table_name": table}))).collect();
+                    json!({"ok": true, "configured_tables": plugin.config.allowed_tables, "discovered": discovered, "truncated": false}).to_string()
+                }
+                Err(_) => error("table discovery failed"),
+            };
+        }
+        let SourceRef::Builtin(source) = source else {
+            unreachable!()
         };
         let configured = &source.allowed_tables;
         if source.allowed_schemas.is_empty() {
@@ -177,9 +223,18 @@ impl McpServer {
             Ok(source) => source,
             Err(err) => return error(&err.to_string()),
         };
-        if !guard::table_allowed(source, &params.table) {
+        if !guard::table_allowed_policy(&source.policy(), &params.table) {
             return error("table is outside the source allowlist");
         }
+        if let SourceRef::Plugin(plugin) = &source {
+            return match plugin.describe_table(&params.table).await {
+                Ok(result) => json!({"ok": true, "table": params.table, "columns": result["columns"], "truncated": result["truncated"].as_bool().unwrap_or(false)}).to_string(),
+                Err(_) => error("table description failed"),
+            };
+        }
+        let SourceRef::Builtin(source) = source else {
+            unreachable!()
+        };
         let Some((schema, table)) = params.table.split_once('.') else {
             return error("table must use schema.table name");
         };
@@ -215,7 +270,7 @@ impl McpServer {
         description = "Validate one read-only SQL query against the dialect and source allowlist without connecting to the database"
     )]
     fn validate_sql(&self, Parameters(params): Parameters<SqlParams>) -> String {
-        match self.source(&params.source).and_then(|source| guard::validate(source, &params.sql, params.max_rows)) {
+        match self.source(&params.source).and_then(|source| guard::validate_policy(&source.policy(), &params.sql, params.max_rows)) {
             Ok(query) => json!({"ok": true, "sql": query.sql, "tables": query.tables, "max_rows": query.row_cap}).to_string(),
             Err(err) => error(&err.to_string()),
         }
@@ -236,7 +291,8 @@ impl McpServer {
             Ok(source) => source,
             Err(err) => return error(&err.to_string()),
         };
-        let approved = match guard::validate(source, &params.sql, params.max_rows) {
+        let approved = match guard::validate_policy(&source.policy(), &params.sql, params.max_rows)
+        {
             Ok(query) => query,
             Err(err) => return error(&err.to_string()),
         };

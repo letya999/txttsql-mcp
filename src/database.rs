@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use secrecy::ExposeSecret;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{
     PgPool,
@@ -22,7 +22,7 @@ use tokio::sync::{Mutex, Semaphore};
 
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct QueryResult {
     pub rows: Vec<Value>,
     pub truncated: bool,
@@ -56,6 +56,13 @@ impl Registry {
 
     pub fn get(&self, id: &str) -> Option<Arc<dyn DatabaseAdapter>> {
         self.adapters.get(id).cloned()
+    }
+
+    pub fn insert(&mut self, id: String, adapter: Arc<dyn DatabaseAdapter>) -> Result<()> {
+        if self.adapters.insert(id, adapter).is_some() {
+            bail!("duplicate database adapter")
+        }
+        Ok(())
     }
 }
 

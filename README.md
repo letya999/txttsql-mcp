@@ -4,6 +4,8 @@ Rust MCP server for guarded analytics across named PostgreSQL, CockroachDB and C
 
 Each source has its own identity, allowlist, timeout, row cap and connection pool. PostgreSQL and CockroachDB queries execute in read-only transactions. ClickHouse queries use an account that must have a read-only profile. The MCP surface is stdio, implemented with the [official Rust SDK](https://github.com/modelcontextprotocol/rust-sdk).
 
+Separately packaged database and metadata plugins can be installed through versioned manifests without rebuilding the server. See the [plugin contract and examples](docs/operations/plugins.md).
+
 ## Start
 
 1. Copy `config.example.toml` to `config.toml` and replace the placeholder hosts and credential references.

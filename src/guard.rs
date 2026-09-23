@@ -2,7 +2,7 @@ use crate::config::{DatabaseKind, Source};
 use anyhow::{Result, bail};
 use sqlparser::{
     ast::{Expr, ObjectName, Query, SetExpr, Statement, TableFactor, Visit, Visitor},
-    dialect::{ClickHouseDialect, PostgreSqlDialect},
+    dialect::{ClickHouseDialect, GenericDialect, PostgreSqlDialect},
     parser::Parser,
 };
 use std::{collections::HashSet, ops::ControlFlow};
@@ -14,7 +14,41 @@ pub struct ApprovedQuery {
     pub row_cap: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SqlDialect {
+    Postgres,
+    Clickhouse,
+    Ansi,
+}
+
+#[derive(Clone, Copy)]
+pub struct SqlPolicy<'a> {
+    pub dialect: SqlDialect,
+    pub max_rows: u32,
+    pub allowed_schemas: &'a [String],
+    pub allowed_tables: &'a [String],
+}
+
+impl<'a> From<&'a Source> for SqlPolicy<'a> {
+    fn from(source: &'a Source) -> Self {
+        Self {
+            dialect: match source.kind {
+                DatabaseKind::Clickhouse => SqlDialect::Clickhouse,
+                _ => SqlDialect::Postgres,
+            },
+            max_rows: source.max_rows,
+            allowed_schemas: &source.allowed_schemas,
+            allowed_tables: &source.allowed_tables,
+        }
+    }
+}
+
 pub fn table_allowed(source: &Source, name: &str) -> bool {
+    table_allowed_policy(&SqlPolicy::from(source), name)
+}
+
+pub fn table_allowed_policy(policy: &SqlPolicy<'_>, name: &str) -> bool {
     let parts: Vec<_> = name.split('.').collect();
     parts.len() == 2
         && parts.iter().all(|part| {
@@ -25,37 +59,46 @@ pub fn table_allowed(source: &Source, name: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         })
-        && (source
+        && (policy
             .allowed_tables
             .iter()
-            .any(|table| same_name(source.kind, table, name))
-            || source
+            .any(|table| same_name(policy.dialect, table, name))
+            || policy
                 .allowed_schemas
                 .iter()
-                .any(|schema| same_name(source.kind, schema, parts[0])))
+                .any(|schema| same_name(policy.dialect, schema, parts[0])))
 }
 
-fn same_name(kind: DatabaseKind, left: &str, right: &str) -> bool {
-    match kind {
-        DatabaseKind::Clickhouse => left == right,
+fn same_name(dialect: SqlDialect, left: &str, right: &str) -> bool {
+    match dialect {
+        SqlDialect::Clickhouse => left == right,
         _ => left.eq_ignore_ascii_case(right),
     }
 }
 
-fn normalize_name(kind: DatabaseKind, name: &str) -> String {
-    match kind {
-        DatabaseKind::Clickhouse => name.to_owned(),
+fn normalize_name(dialect: SqlDialect, name: &str) -> String {
+    match dialect {
+        SqlDialect::Clickhouse => name.to_owned(),
         _ => name.to_ascii_lowercase(),
     }
 }
 
 pub fn validate(source: &Source, sql: &str, requested_rows: Option<u32>) -> Result<ApprovedQuery> {
+    validate_policy(&SqlPolicy::from(source), sql, requested_rows)
+}
+
+pub fn validate_policy(
+    policy: &SqlPolicy<'_>,
+    sql: &str,
+    requested_rows: Option<u32>,
+) -> Result<ApprovedQuery> {
     if sql.len() > 100_000 {
         bail!("SQL exceeds 100 KB")
     }
-    let dialect: Box<dyn sqlparser::dialect::Dialect> = match source.kind {
-        DatabaseKind::Clickhouse => Box::new(ClickHouseDialect {}),
-        _ => Box::new(PostgreSqlDialect {}),
+    let dialect: Box<dyn sqlparser::dialect::Dialect> = match policy.dialect {
+        SqlDialect::Clickhouse => Box::new(ClickHouseDialect {}),
+        SqlDialect::Postgres => Box::new(PostgreSqlDialect {}),
+        SqlDialect::Ansi => Box::new(GenericDialect {}),
     };
     let mut statements = Parser::parse_sql(dialect.as_ref(), sql)
         .map_err(|_| anyhow::anyhow!("SQL did not parse for this dialect"))?;
@@ -67,7 +110,7 @@ pub fn validate(source: &Source, sql: &str, requested_rows: Option<u32>) -> Resu
         bail!("only SELECT queries are allowed")
     }
     let mut visitor = GuardVisitor {
-        source,
+        policy: *policy,
         scopes: Vec::new(),
         tables: HashSet::new(),
     };
@@ -75,8 +118,8 @@ pub fn validate(source: &Source, sql: &str, requested_rows: Option<u32>) -> Resu
         bail!("{reason}")
     }
     let row_cap = requested_rows
-        .unwrap_or(source.max_rows)
-        .min(source.max_rows);
+        .unwrap_or(policy.max_rows)
+        .min(policy.max_rows);
     if row_cap == 0 {
         bail!("row limit must be positive")
     }
@@ -96,7 +139,7 @@ pub fn validate(source: &Source, sql: &str, requested_rows: Option<u32>) -> Resu
 }
 
 struct GuardVisitor<'a> {
-    source: &'a Source,
+    policy: SqlPolicy<'a>,
     scopes: Vec<HashSet<String>>,
     tables: HashSet<String>,
 }
@@ -130,7 +173,7 @@ impl Visitor for GuardVisitor<'_> {
             .map(|with| {
                 with.cte_tables
                     .iter()
-                    .map(|cte| normalize_name(self.source.kind, &cte.alias.name.value))
+                    .map(|cte| normalize_name(self.policy.dialect, &cte.alias.name.value))
                     .collect()
             })
             .unwrap_or_default();
@@ -174,7 +217,7 @@ impl Visitor for GuardVisitor<'_> {
         }
         let name = parts
             .iter()
-            .map(|part| normalize_name(self.source.kind, &part.value))
+            .map(|part| normalize_name(self.policy.dialect, &part.value))
             .collect::<Vec<_>>()
             .join(".");
         if parts.len() == 1 && self.scopes.iter().rev().any(|scope| scope.contains(&name)) {
@@ -183,7 +226,7 @@ impl Visitor for GuardVisitor<'_> {
         if parts.len() != 2 {
             return ControlFlow::Break("physical tables must use schema.table names".into());
         }
-        if !table_allowed(self.source, &name) {
+        if !table_allowed_policy(&self.policy, &name) {
             return ControlFlow::Break(format!("table {name} is outside the source allowlist"));
         }
         self.tables.insert(name);
@@ -211,9 +254,10 @@ impl Visitor for GuardVisitor<'_> {
                 .collect::<Vec<_>>()
                 .join(".");
             let name = full.rsplit('.').next().unwrap_or(&full);
-            let denied = match self.source.kind {
-                DatabaseKind::Clickhouse => CH_DENY.contains(&name),
-                _ => PG_DENY.contains(&name),
+            let denied = match self.policy.dialect {
+                SqlDialect::Clickhouse => CH_DENY.contains(&name),
+                SqlDialect::Postgres => PG_DENY.contains(&name),
+                SqlDialect::Ansi => CH_DENY.contains(&name) || PG_DENY.contains(&name),
             };
             if denied {
                 return ControlFlow::Break(format!("function {full} is forbidden"));

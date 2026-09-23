@@ -58,3 +58,29 @@ ontology_path = "/ontology"
 # Airflow 2 Basic Auth alternative: omit token and set basic_user plus basic_password.
 # basic_user = "mcp_reader"
 # basic_password = { kind = "file", path = "/run/secrets/airflow_password" }
+
+# Optional external packages, installed independently of the server.
+# See docs/operations/plugins.md for the protocol and Docker requirements.
+# [[plugin_databases]]
+# id = "local_metrics"
+# manifest = "/opt/txttsql/plugins/sqlite/plugin.json"
+# allowed_schemas = ["main"]
+# max_rows = 500
+# workers = 2
+# [plugin_databases.settings]
+# path = "/data/metrics.sqlite"
+#
+# [[plugin_metadata]]
+# id = "local_catalog"
+# manifest = "/opt/txttsql/plugins/catalog-json/plugin.json"
+# [plugin_metadata.settings]
+# path = "/data/catalog.json"
+#
+# [[plugin_metadata]]
+# id = "company_openmetadata"
+# manifest = "/opt/txttsql/plugins/openmetadata/plugin.json"
+# [plugin_metadata.settings]
+# url = "https://metadata.example.internal"
+# ca_file = "/run/secrets/internal-ca.pem" # optional private CA
+# [plugin_metadata.secrets]
+# token = { kind = "env", name = "OPENMETADATA_TOKEN" }

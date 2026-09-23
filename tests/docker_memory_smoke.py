@@ -10,6 +10,26 @@ from pathlib import Path
 name = f"txttsql-memory-smoke-{uuid.uuid4().hex[:12]}"
 subprocess.run(["docker", "volume", "create", name], check=True, capture_output=True)
 try:
+    permissions = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "stat",
+            "--mount",
+            f"type=volume,source={name},target=/data",
+            "txttsql-mcp:ci",
+            "-c",
+            "%a %u:%g",
+            "/data",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=True,
+    ).stdout.strip()
+    assert permissions == "700 65532:65532", permissions
     with tempfile.TemporaryDirectory() as directory:
         config = Path(directory, "config.toml")
         config.write_text(

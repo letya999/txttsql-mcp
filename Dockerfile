@@ -5,7 +5,7 @@ COPY src ./src
 RUN cargo build --locked --release
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && apt-get clean && mkdir /data && chown 65532:65532 /data
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && apt-get clean && mkdir /data && chown 65532:65532 /data && chmod 700 /data
 COPY --from=build /build/target/release/txttsql-mcp /usr/local/bin/txttsql-mcp
 USER 65532:65532
 WORKDIR /app

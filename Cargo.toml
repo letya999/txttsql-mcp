@@ -2,6 +2,13 @@
 name = "txttsql-mcp"
 version = "0.1.0"
 edition = "2024"
+description = "Read-only analytics MCP server for PostgreSQL, CockroachDB and ClickHouse with installable database and metadata plugins"
+license = "AGPL-3.0-only"
+readme = "README.md"
+repository = "https://github.com/letya999/txttsql-mcp"
+homepage = "https://github.com/letya999/txttsql-mcp"
+keywords = ["mcp", "postgres", "clickhouse", "analytics", "metadata"]
+categories = ["database", "command-line-utilities"]
 
 [dependencies]
 anyhow = "1"

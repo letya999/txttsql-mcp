@@ -161,9 +161,9 @@ impl MetadataAdapter for Airflow {
         let needle = text.to_lowercase();
         let mut matches = Vec::new();
         let mut scanned = 0;
-        let mut incomplete = false;
-        for offset in (0..1000).step_by(100) {
-            let offset = offset.to_string();
+        let mut incomplete = true;
+        for _ in 0..10 {
+            let offset = scanned.to_string();
             let result = self
                 .api
                 .get(
@@ -179,6 +179,7 @@ impl MetadataAdapter for Airflow {
                 .get("dags")
                 .and_then(Value::as_array)
                 .context("Airflow response has no dags")?;
+            let total_entries = result.get("total_entries").and_then(Value::as_u64);
             scanned += dags.len();
             matches.extend(
                 dags.iter()
@@ -191,16 +192,14 @@ impl MetadataAdapter for Airflow {
                     .cloned(),
             );
             if matches.len() == 20 {
-                incomplete = true;
                 break;
             }
-            if dags.len() < 100 {
+            if dags.is_empty() || total_entries.is_some_and(|total| scanned as u64 >= total) {
+                incomplete = false;
                 break;
             }
         }
-        Ok(
-            serde_json::json!({"dags": matches, "scanned": scanned, "incomplete": incomplete || scanned == 1000}),
-        )
+        Ok(serde_json::json!({"dags": matches, "scanned": scanned, "incomplete": incomplete}))
     }
     async fn detail(&self, id: &str) -> Result<Value> {
         if id.is_empty() || id.len() > 200 {
@@ -245,7 +244,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = tokio::spawn(async move {
-            for _ in 0..5 {
+            for _ in 0..6 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
                 loop {
@@ -265,7 +264,12 @@ mod tests {
                 );
                 let line = request.lines().next().unwrap();
                 let body = if line.starts_with("GET /api/v2/dags?") {
-                    r#"{"dags":[{"dag_id":"payments"}]}"#
+                    if line.contains("offset=0") {
+                        r#"{"dags":[{"dag_id":"payments"}],"total_entries":2}"#
+                    } else {
+                        assert!(line.contains("offset=1"));
+                        r#"{"dags":[{"dag_id":"payments_archive"}],"total_entries":2}"#
+                    }
                 } else if line.starts_with("GET /api/v2/dags/payments/tasks ") {
                     r#"{"tasks":[{"task_id":"extract","downstream_task_ids":["load"]},{"task_id":"load","downstream_task_ids":[]}]}"#
                 } else if line.starts_with("GET /api/v2/dags/payments ") {
@@ -311,10 +315,11 @@ mod tests {
         };
         let registry = Registry::new(Some(source(None)), Some(source(Some(2)))).unwrap();
         let airflow = registry.get("airflow").unwrap();
-        assert_eq!(
-            airflow.search("pay").await.unwrap()["dags"][0]["dag_id"],
-            "payments"
-        );
+        let dags = airflow.search("pay").await.unwrap();
+        assert_eq!(dags["dags"][0]["dag_id"], "payments");
+        assert_eq!(dags["dags"][1]["dag_id"], "payments_archive");
+        assert_eq!(dags["scanned"], 2);
+        assert_eq!(dags["incomplete"], false);
         assert_eq!(
             airflow.detail("payments").await.unwrap()["edges"][0]["to"],
             "load"

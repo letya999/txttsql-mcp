@@ -319,7 +319,10 @@ impl McpServer {
                         .is_ok();
                 json!({"ok": true, "source": params.source, "tables": approved.tables, "result": result, "memory_saved": memory_saved}).to_string()
             }
-            Err(_) => error("database query failed"),
+            Err(err) => {
+                eprintln!("txttsql-mcp query error: {err:#}");
+                error("database query failed")
+            }
         }
     }
 

@@ -209,11 +209,15 @@ impl DatabaseAdapter for ClickHouseAdapter {
         };
         let start = Instant::now();
         let mut url = self.url.clone();
+        // Do NOT send a `readonly` parameter: hardened deployments run users
+        // under a profile-level readonly>=1 where modifying the setting raises
+        // READONLY (Code 164). SELECT-only behavior is enforced by
+        // guard::validate before this point; allow_ddl and the row/byte/time
+        // bounds below cap blast radius when the profile allows changing them.
         url.query_pairs_mut()
             .append_pair("database", &self.source.database)
             .append_pair("default_format", "JSON")
             .append_pair("allow_ddl", "0")
-            .append_pair("readonly", "1")
             .append_pair("allow_introspection_functions", "0")
             .append_pair(
                 "max_execution_time",
@@ -231,7 +235,13 @@ impl DatabaseAdapter for ClickHouseAdapter {
             .await
             .context("ClickHouse request failed")?;
         if !response.status().is_success() {
-            bail!("ClickHouse rejected the query (HTTP {})", response.status())
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            bail!(
+                "ClickHouse rejected the query (HTTP {}): {}",
+                status,
+                &body[..body.len().min(400)]
+            )
         }
         let mut body = Vec::new();
         while let Some(chunk) = response

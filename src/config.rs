@@ -9,7 +9,7 @@ use std::{
 };
 use tokio::{io::AsyncReadExt, process::Command, time::timeout};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
@@ -147,6 +147,57 @@ impl Config {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("cannot read config {}", path.display()))?;
         let config: Self = toml::from_str(&raw).context("invalid configuration")?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// TXTTSQL_SOURCES holds the one-line JSON form of `[[sources]]` for hosted
+    /// deployments that inject configuration through environment variables.
+    /// Only database sources can come from the environment; plugins, memory
+    /// and metadata providers stay file-configured.
+    pub fn from_env() -> Result<Option<Self>> {
+        let Ok(raw) = std::env::var("TXTTSQL_SOURCES") else {
+            return Ok(None);
+        };
+        Self::from_env_json(&raw).map(Some)
+    }
+
+    fn from_env_json(raw: &str) -> Result<Self> {
+        let sources: Vec<Source> =
+            serde_json::from_str(raw.trim()).context("invalid TXTTSQL_SOURCES JSON")?;
+        let config = Self {
+            sources,
+            ..Self::default()
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Resolve the long-running configuration: an existing --config file wins,
+    /// otherwise TXTTSQL_SOURCES is used. Failures degrade to an empty server
+    /// with warnings instead of terminating, so tools/list and typed tool
+    /// errors keep working while operators fix configuration.
+    pub fn resolve(path: &Path) -> (Self, Vec<String>) {
+        let mut warnings = Vec::new();
+        if path.exists() {
+            match Self::load(path) {
+                Ok(config) => return (config, warnings),
+                Err(err) => warnings.push(format!("{} ignored: {err:#}", path.display())),
+            }
+        }
+        match Self::from_env() {
+            Ok(Some(config)) => return (config, warnings),
+            Ok(None) => warnings.push(format!(
+                "no configuration at {} and TXTTSQL_SOURCES is unset",
+                path.display()
+            )),
+            Err(err) => warnings.push(format!("TXTTSQL_SOURCES ignored: {err:#}")),
+        }
+        (Self::default(), warnings)
+    }
+
+    fn validate(&self) -> Result<()> {
+        let config = self;
         if config.sources.is_empty()
             && config.plugin_databases.is_empty()
             && config.plugin_metadata.is_empty()
@@ -289,7 +340,7 @@ impl Config {
                 )
             }
         }
-        Ok(config)
+        Ok(())
     }
 }
 
@@ -414,6 +465,32 @@ mod tests {
         assert!(!valid_id("prod/ch"));
         assert!(valid_object_name("analytics.payments"));
         assert!(!valid_object_name("analytics.*"));
+    }
+
+    #[test]
+    fn env_sources_validate_like_toml() {
+        let good = r#"[{"id":"db","kind":"postgres","host":"127.0.0.1","port":5432,"database":"db","user_secret":{"kind":"env","name":"DB_USER"},"password":{"kind":"env","name":"DB_PASSWORD"},"allowed_schemas":["public"]}]"#;
+        let config = Config::from_env_json(good).unwrap();
+        assert_eq!(config.sources.len(), 1);
+        assert!(Config::from_env_json("not json").is_err());
+        assert!(Config::from_env_json("[]").is_err());
+        assert!(Config::from_env_json(
+            r#"[{"id":"db","kind":"postgres","host":"","port":5432,"database":"db","user_secret":{"kind":"env","name":"U"},"password":{"kind":"env","name":"P"}}]"#
+        )
+        .is_err());
+        assert!(Config::from_env_json(
+            r#"[{"id":"db","kind":"postgres","host":"h","port":5432,"database":"d","user_secret":{"kind":"env","name":"U"},"password":{"kind":"env","name":"P"},"extra":true}]"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn resolve_keeps_server_running_without_configuration() {
+        let missing =
+            std::env::temp_dir().join(format!("txttsql-missing-{}.toml", std::process::id()));
+        let (config, warnings) = Config::resolve(&missing);
+        assert!(config.sources.is_empty());
+        assert!(!warnings.is_empty());
     }
 
     #[test]

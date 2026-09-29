@@ -102,7 +102,10 @@ struct AnnotationParams {
 
 impl McpServer {
     pub fn load(path: &Path) -> Result<Self> {
-        let config = Config::load(path)?;
+        let (config, warnings) = Config::resolve(path);
+        for warning in warnings {
+            eprintln!("txttsql-mcp config warning: {warning}");
+        }
         let plugins = PluginRegistry::new(&config, path.parent().unwrap_or(Path::new(".")))?;
         let mut databases = DatabaseRegistry::new(&config.sources)?;
         for plugin in plugins.databases() {
